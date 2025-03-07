@@ -44,8 +44,10 @@ let difficulty = '';
 let uploadState = { uploading: false };
 
 /* Main function for uploading code to GitHub repo, and callback cb is called if success */
-const upload = (token, hook, code, problem, filename, sha, commitMsg, cb = undefined) => {
-  const URL = `https://api.github.com/repos/${hook}/contents/${problem}/${filename}`;
+const upload = (token, hook, code, problemName, directory, filename, sha, commitMsg, cb = undefined) => {
+  const URL = `https://api.github.com/repos/${hook}/contents/${directory}/${filename}`;
+  console.log("upload() URL:", URL);
+  console.log("Token:", token, "Problem:", problemName, "SHA:", sha, "CommitMsg:", commitMsg);
 
   /* Define Payload */
   let data = {
@@ -76,8 +78,8 @@ const upload = (token, hook, code, problem, filename, sha, commitMsg, cb = undef
     })
     .then(async body => {
       updatedSha = body.content.sha; // get updated SHA.
-      stats = await getAndInitializeStats(problem);
-      stats.shas[problem][filename] = updatedSha;
+      stats = await getAndInitializeStats(problemName);
+      stats.shas[problemName][filename] = updatedSha;
       return chrome.storage.local.set({ stats });
     })
     .then(() => {
@@ -135,6 +137,7 @@ const update = (
   token,
   hook,
   addition,
+  problemName,
   directory,
   filename,
   commitMsg,
@@ -159,7 +162,7 @@ const update = (
         : btoa(unescape(encodeURIComponent(existingContent))),
     )
     .then(newContent =>
-      upload(token, hook, newContent, directory, filename, responseSHA, commitMsg, cb),
+      upload(token, hook, newContent, problemName, directory, filename, responseSHA, commitMsg, cb),
     );
 };
 
@@ -172,6 +175,7 @@ function uploadGit(
   shouldPrependDiscussionPosts = false,
   cb = undefined,
   _diff = undefined,
+  directory
 ) {
   // Assign difficulty
   if (_diff && _diff !== undefined) {
@@ -211,13 +215,17 @@ function uploadGit(
             ? stats.shas[problemName][fileName]
             : '';
 
-        return upload(token, hook, code, problemName, fileName, sha, commitMsg, cb);
+		const finalURL = `https://api.github.com/repos/${hook}/contents/${directory}/${fileName}`;
+		console.log("Final upload URL:", finalURL);
+
+		return upload(token, hook, code, problemName, directory, fileName, sha, commitMsg, cb);
       } else if (action === 'update') {
         return update(
           token,
           hook,
           code,
-          problemName,
+		  problemName,
+          directory,
           fileName,
           commitMsg,
           shouldPrependDiscussionPosts,
@@ -234,7 +242,7 @@ function uploadGit(
     })
     .then(data =>
       data != null
-        ? upload(token, hook, code, problemName, fileName, data.sha, commitMsg, cb)
+        ? upload(token, hook, code, directory, fileName, data.sha, commitMsg, cb)
         : undefined,
     );
 }
@@ -405,6 +413,7 @@ LeetCodeV1.prototype.init = async function () { };
 LeetCodeV1.prototype.findAndUploadCode = function (
   problemName,
   fileName,
+  directory,
   commitMsg,
   action,
   cb = undefined,
@@ -425,6 +434,9 @@ LeetCodeV1.prototype.findAndUploadCode = function (
   if (submissionURL == undefined) {
     return;
   }
+
+  console.log("Submission URL:", submissionURL);
+
   /* Request for the submission details page */
   return fetch(submissionURL)
     .then(res => {
@@ -473,6 +485,9 @@ LeetCodeV1.prototype.findAndUploadCode = function (
             commitMsg = `Time: ${resultRuntime}, Memory: ${resultMemory} - LeetHub`;
           }
 
+          console.log("Extracted code:", code); // 디버깅 로그
+          console.log("Commit message:", commitMsg); // 디버깅 로그
+
           if (code != null) {
             return uploadGit(
               btoa(unescape(encodeURIComponent(code))),
@@ -482,6 +497,8 @@ LeetCodeV1.prototype.findAndUploadCode = function (
               action,
               false,
               cb,
+			  undefined,
+			  directory
             );
           }
         }
@@ -498,7 +515,7 @@ LeetCodeV1.prototype.getLanguageExtension = function () {
     for (let i = 0; i < tag.length; i += 1) {
       const elem = tag[i].textContent;
       if (elem !== undefined && languages[elem] !== undefined) {
-        return languages[elem];
+        return elem;
       }
     }
   }
@@ -737,14 +754,20 @@ LeetCodeV2.prototype.init = async function () {
     body: JSON.stringify(submissionDetailsQuery),
   };
   const data = await fetch('https://leetcode.com/graphql/', options)
-    .then(res => res.json())
-    .then(res => res.data.submissionDetails);
-
-  this.submissionData = data;
+  .then(res => res.json())
+  .then(res => { 
+    console.log("GraphQL response:", res);
+    return res;
+  });
+  if (!data.data || !data.data.submissionDetails) {
+    throw new Error("GraphQL query did not return submissionDetails: " + JSON.stringify(data));
+  }
+  this.submissionData = data.data.submissionDetails;
 };
 LeetCodeV2.prototype.findAndUploadCode = function (
   problemName,
   fileName,
+  directory,
   commitMsg,
   action,
   cb = undefined,
@@ -762,6 +785,8 @@ LeetCodeV2.prototype.findAndUploadCode = function (
     action,
     false,
     cb,
+	undefined,
+    directory
   );
 };
 LeetCodeV2.prototype.getCode = function () {
@@ -778,7 +803,7 @@ LeetCodeV2.prototype.getCode = function () {
 };
 LeetCodeV2.prototype.getLanguageExtension = function () {
   if (this.submissionData != null) {
-    return languages[this.submissionData.lang.verboseName];
+    return this.submissionData.lang.verboseName;
   }
 
   const tag = document.querySelector('button[id^="headlessui-listbox-button"]');
@@ -791,7 +816,7 @@ LeetCodeV2.prototype.getLanguageExtension = function () {
     throw new Error('Unknown Language: ' + { lang });
   }
 
-  return languages[lang];
+  return lang;
 };
 LeetCodeV2.prototype.getNotesIfAny = function () { };
 
@@ -1088,10 +1113,23 @@ const loader = (leetCode, suffix) => {
 
       const problemName = leetCode.getProblemNameSlug();
       const alreadyCompleted = await checkAlreadyCompleted(problemName);
-      const language = leetCode.getLanguageExtension();
-      if (!language) {
-        throw new Error('Could not find language');
-      }
+
+	  const languageName = leetCode.getLanguageExtension();
+	  if (!languageName) {
+		throw new Error('Could not find language');
+	  }
+	  
+	  // 폴더명(특수문자 제거)
+	  const safeLang = languageName.replace(/[^a-zA-Z0-9]/g, '');
+	  // 실제 확장자 (.py, .sql, ...)
+	  const extension = languages[languageName] || ''; 
+	  // 디렉토리 예: "MySQL/LeetCode/0001-two-sum"
+	  const directory = `${safeLang}/LeetCode/${difficulty}/${problemName}`;
+	  console.log(directory)
+	  // 최종 파일명
+	  const finalFileName = suffix 
+		? problemName + suffix + extension 
+		: problemName + extension;
 
       /* Upload README */
       const updateReadMe = await chrome.storage.local.get('stats').then(({ stats }) => {
@@ -1105,6 +1143,9 @@ const loader = (leetCode, suffix) => {
             readmeMsg,
             'upload',
             false,
+			undefined,
+			undefined,
+			directory
           );
         }
       });
@@ -1120,13 +1161,17 @@ const loader = (leetCode, suffix) => {
           createNotesMsg,
           'upload',
           false,
+		  undefined,
+		  undefined,
+		  directory
         );
       }
 
       /* Upload code to Git */
       const updateCode = leetCode.findAndUploadCode(
         problemName,
-        suffix ? problemName + suffix + language : problemName + language,
+        finalFileName,
+		directory,
         probStats,
         'upload',
       );
