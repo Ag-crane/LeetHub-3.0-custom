@@ -29,6 +29,7 @@
         "https://practice.geeksforgeeks.org/*"
       ],
       "js": [
+		"scripts/commitSolutionFiles.js",
         "scripts/leetcode.js",
         "scripts/authorize.js",
         "scripts/gfg.js"

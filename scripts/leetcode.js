@@ -46,8 +46,6 @@ let uploadState = { uploading: false };
 /* Main function for uploading code to GitHub repo, and callback cb is called if success */
 const upload = (token, hook, code, problemName, directory, filename, sha, commitMsg, cb = undefined) => {
   const URL = `https://api.github.com/repos/${hook}/contents/${directory}/${filename}`;
-  console.log("upload() URL:", URL);
-  console.log("Token:", token, "Problem:", problemName, "SHA:", sha, "CommitMsg:", commitMsg);
 
   /* Define Payload */
   let data = {
@@ -216,8 +214,6 @@ function uploadGit(
             : '';
 
 		const finalURL = `https://api.github.com/repos/${hook}/contents/${directory}/${fileName}`;
-		console.log("Final upload URL:", finalURL);
-
 		return upload(token, hook, code, problemName, directory, fileName, sha, commitMsg, cb);
       } else if (action === 'update') {
         return update(
@@ -435,8 +431,6 @@ LeetCodeV1.prototype.findAndUploadCode = function (
     return;
   }
 
-  console.log("Submission URL:", submissionURL);
-
   /* Request for the submission details page */
   return fetch(submissionURL)
     .then(res => {
@@ -484,9 +478,6 @@ LeetCodeV1.prototype.findAndUploadCode = function (
             );
             commitMsg = `Time: ${resultRuntime}, Memory: ${resultMemory} - LeetHub`;
           }
-
-          console.log("Extracted code:", code); // 디버깅 로그
-          console.log("Commit message:", commitMsg); // 디버깅 로그
 
           if (code != null) {
             return uploadGit(
@@ -756,7 +747,6 @@ LeetCodeV2.prototype.init = async function () {
   const data = await fetch('https://leetcode.com/graphql/', options)
   .then(res => res.json())
   .then(res => { 
-    console.log("GraphQL response:", res);
     return res;
   });
   if (!data.data || !data.data.submissionDetails) {
@@ -862,6 +852,7 @@ LeetCodeV2.prototype.getSuccessStateAndUpdate = function () {
   }
   return false;
 };
+
 LeetCodeV2.prototype.parseStats = function () {
   if (this.submissionData != null) {
     const runtimePercentile =
@@ -1079,119 +1070,130 @@ chrome.storage.local.get('isSync', data => {
   }
 });
 
-const loader = (leetCode, suffix) => {
-  let iterations = 0;
-  // start upload indicator here
-  leetCode.startSpinner();
-  const intervalId = setInterval(async () => {
-    try {
-      const isSuccessfulSubmission = leetCode.getSuccessStateAndUpdate();
-      if (!isSuccessfulSubmission) {
-        iterations++;
-        if (iterations > 9) {
-          clearInterval(intervalId); // poll for max 10 attempts (10 seconds)
-          leetCode.markUploadFailed();
-        }
-        return;
-      }
+function formatFolderName(slug) {
+	const parts = slug.split('-');
+	const problemNumber = parts[0];
+	const title = parts.slice(1)
+						.map(word => word.charAt(0).toUpperCase() + word.slice(1))
+						.join(' ');
+	return `${problemNumber}. ${title}`;
+  }
+  
+function formatFileName(slug, extension) {
+	const parts = slug.split('-');
+	// 슬러그의 첫번째 요소(문제 번호)는 제외하고 제목만 사용
+	const title = parts.slice(1)
+						.map(word => word.charAt(0).toUpperCase() + word.slice(1))
+						.join(' ');
+	return `${title}${extension}`;
+}
 
-      // If successful, stop polling
-      clearInterval(intervalId);
+function formatTitle(slug) {
+	let parts = slug.split('-');
+	// 만약 첫 요소가 숫자로만 이루어져 있으면 제거
+	if (parts.length > 1 && /^\d+$/.test(parts[0])) {
+	  parts.shift();
+	}
+	// 각 단어의 첫 글자 대문자로 변환
+	return parts.map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+}
+  
+function reformatStats(statsStr) {
+	let timeMatch = statsStr.match(/Time:\s*([\d.]+)\s*ms/);
+	let memoryMatch = statsStr.match(/Space:\s*([\d.]+)B/);
+	let time = timeMatch ? parseFloat(timeMatch[1]).toFixed(2) : "0.00";
+	let memory = memoryMatch ? parseFloat(memoryMatch[1]).toFixed(1) : "0.0";
+	return `Time: ${time} ms, Memory: ${memory} MB - LeetHub`;
+}
 
-      // For v2, query LeetCode API for submission results
-      await leetCode.init();
-
-      const probStats = leetCode.parseStats();
-      if (!probStats) {
-        throw new Error('Could not get submission stats');
-      }
-
-      const probStatement = leetCode.parseQuestion();
-      if (!probStatement) {
-        throw new Error('Could not find problem statement');
-      }
-
-      const problemName = leetCode.getProblemNameSlug();
-      const alreadyCompleted = await checkAlreadyCompleted(problemName);
-
-	  const languageName = leetCode.getLanguageExtension();
-	  if (!languageName) {
-		throw new Error('Could not find language');
+const loader = async (leetCode, suffix) => {
+	let iterations = 0;
+	leetCode.startSpinner();
+	const intervalId = setInterval(async () => {
+	  try {
+		const isSuccessfulSubmission = leetCode.getSuccessStateAndUpdate();
+		if (!isSuccessfulSubmission) {
+		  iterations++;
+		  if (iterations > 9) {
+			clearInterval(intervalId);
+			leetCode.markUploadFailed();
+		  }
+		  return;
+		}
+		clearInterval(intervalId);
+  
+		// For v2, query LeetCode API for submission results
+		await leetCode.init();
+  
+		const probStats = leetCode.parseStats();
+		if (!probStats) {
+		  throw new Error('Could not get submission stats');
+		}
+  
+		const probStatement = leetCode.parseQuestion();
+		if (!probStatement) {
+		  throw new Error('Could not find problem statement');
+		}
+  
+		// getProblemNameSlug() now returns a slug like "1000-two-sum"
+		const problemSlug = leetCode.getProblemNameSlug();
+		const languageName = leetCode.getLanguageExtension();
+		if (!languageName) {
+		  throw new Error('Could not find language');
+		}
+		const safeLang = languageName.replace(/[^a-zA-Z0-9]/g, '');
+		const extension = languages[languageName] || '';
+  
+		// 폴더명과 파일명을 새 규칙으로 생성
+		const folderName = formatFolderName(problemSlug); // "1000. Two Sum"
+		const finalFileName = formatFileName(problemSlug, extension); // "Two Sum.js"
+  
+		// 폴더 구조: 언어명/LeetHub/난이도/문제폴더명
+		const directory = `${safeLang}/LeetCode/${difficulty}/${folderName}`;
+		console.log("Final directory:", directory);
+  
+		// 두 파일의 내용을 준비 (README.md와 코드 파일)
+		const filesToCommit = [
+		  {
+			filename: "README.md",
+			content: probStatement
+		  },
+		  {
+			filename: finalFileName,
+			content: leetCode.getCode()
+		  }
+		];
+  
+		const repo = await chrome.storage.local.get('leethub_hook').then(data => data.leethub_hook);
+		const branch = 'main';
+  
+		const title = formatTitle(problemSlug);
+		const formattedStats = reformatStats(probStats);
+		const combinedCommitMsg = `[${difficulty}] Title: ${title}, ${formattedStats}`;
+		
+		// commitSolutionFiles() 함수 호출 (두 파일을 하나의 커밋으로)
+		await commitSolutionFiles({
+		  repo: repo,
+		  branch: branch,
+		  problemName: problemSlug,
+		  directory: directory,
+		  files: filesToCommit,
+		  difficulty: difficulty,
+		  commitMsg: combinedCommitMsg
+		});
+  
+		uploadState.uploading = false;
+		leetCode.markUploaded();
+		incrementStats();
+	  } catch (err) {
+		uploadState.uploading = false;
+		leetCode.markUploadFailed();
+		clearInterval(intervalId);
+		console.error(err);
 	  }
-	  
-	  // 폴더명(특수문자 제거)
-	  const safeLang = languageName.replace(/[^a-zA-Z0-9]/g, '');
-	  // 실제 확장자 (.py, .sql, ...)
-	  const extension = languages[languageName] || ''; 
-	  // 디렉토리 예: "MySQL/LeetCode/0001-two-sum"
-	  const directory = `${safeLang}/LeetCode/${difficulty}/${problemName}`;
-	  console.log(directory)
-	  // 최종 파일명
-	  const finalFileName = suffix 
-		? problemName + suffix + extension 
-		: problemName + extension;
-
-      /* Upload README */
-      const updateReadMe = await chrome.storage.local.get('stats').then(({ stats }) => {
-        const shaExists = stats?.shas?.[problemName]?.['README.md'] !== undefined;
-
-        if (!shaExists) {
-          return uploadGit(
-            btoa(unescape(encodeURIComponent(probStatement))),
-            problemName,
-            'README.md',
-            readmeMsg,
-            'upload',
-            false,
-			undefined,
-			undefined,
-			directory
-          );
-        }
-      });
-
-      /* Upload Notes if any*/
-      notes = leetCode.getNotesIfAny();
-      let updateNotes;
-      if (notes != undefined && notes.length > 0) {
-        updateNotes = uploadGit(
-          btoa(unescape(encodeURIComponent(notes))),
-          problemName,
-          'NOTES.md',
-          createNotesMsg,
-          'upload',
-          false,
-		  undefined,
-		  undefined,
-		  directory
-        );
-      }
-
-      /* Upload code to Git */
-      const updateCode = leetCode.findAndUploadCode(
-        problemName,
-        finalFileName,
-		directory,
-        probStats,
-        'upload',
-      );
-
-      await Promise.all([updateReadMe, updateNotes, updateCode]);
-
-      uploadState.uploading = false;
-      leetCode.markUploaded();
-
-      if (!alreadyCompleted) {
-        incrementStats();
-      }
-    } catch (err) {
-      uploadState.uploading = false;
-      leetCode.markUploadFailed();
-      clearInterval(intervalId);
-      console.error(err);
-    }
-  }, 1000);
+	}, 1000);
 };
+  
 
 const isMacOS = window.navigator.userAgent.includes('Mac');
 
